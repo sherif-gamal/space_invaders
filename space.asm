@@ -7,14 +7,16 @@ invaders   db 10 dup (4)
 left	   db 30
 top		   db 10
 dir		   db 0
-bullet_f   db 0   
-exit_f     db 0
+bullet_f   db 0
 hero_pos   dw 60300
-bullet_pos dw 60330
-oldInt9    dw 2 dup(?)  
+bullet_pos dw 00000
+rand_bul   dw 0
+oldInt9    dw 2 dup(?)
+timer	   db 1
+num		   db 0
+exit_f     db 0
 welcome    db 'WELCOME$'
 exit_msg   db 'BYE BYE YA 7ALAWA :)$'
-
 .code
 start:
 	mov ax, @data
@@ -34,44 +36,64 @@ start:
 	mov word ptr OldInt9+2, ax
 	mov word ptr es:[9*4], offset MyInt9
 	mov word ptr es:[9*4+2], cs
-	sti ;Okay, ints back on. 
-	
+	sti ;Okay, ints back on.
 	lea dx,welcome
 	call disp_msg
-
-	
 	mov ax,13h			;subfunction 0 select mode 19 (or 13h if prefer)
 	int 10h			;call graphics interrupt
 	;==========================
 	call repaint
-	mov cx,8
-	lea di,exit_f
-game_loop:                          ;Main game loop
-	cmp  byte ptr [di],1
-	je   exit
-	call delay 
+game_loop:
+	lea di, exit_f
+	cmp byte ptr [di],1
+	je  exit
+	lea bx, timer
+	cmp byte ptr[bx], 0	; timer finished?
+	je  lbl1			; timer hasn't finished
+	lea di, num
+	cmp byte ptr[di], 20	; repaint and animate after 20
+	jb	lbl2
+	mov byte ptr[di], 0	; zero out number of time slices elapsed
 	call repaint
-	loop game_loop
-	mov cx,8
 	call animate
+lbl2:
+	inc byte ptr[di]
+	call draw_bullet	; draw bullet after .1 sec
+	call delay_01sec
+lbl1:
 	jmp game_loop
+exit:
 	
-	mov ah,00			;again subfunc 0
-	mov al,03			;text mode 3
-	int 10h			;call int
-	mov ah,04ch	
-	mov al,00			;end program normally
-	int 21h
+	
+	
   
-  
-  
- delay:		; was 2 sec changed to 0.25 sec and needs to be less 
+delay:		; 1 second
 	push ax
 	push cx
 	push dx
-	mov cx, 03h           ;1eh		
-	mov dx, 0xd090h       ;8480h
+	mov ax, @data
+	mov es, ax
+	lea bx, timer
+	mov cx, 1eh
+	mov dx, 8480h
 	mov ah, 86h
+	int 15h
+	pop dx
+	pop cx
+	pop ax
+	ret
+
+delay_01sec:	; .1 second for the bullet
+	push ax
+	push cx
+	push dx
+	mov ax, @data
+	mov es, ax
+	lea bx, timer
+	mov byte ptr[bx], 0
+	mov cx, 1h
+	mov dx, 8000h
+	mov ax, 8300h
 	int 15h
 	pop dx
 	pop cx
@@ -121,7 +143,6 @@ repaint:
 	int 10h	;cls
 	call draw_enemies
 	call draw_hero   
-	call draw_bullet
 	pop ds
 	pop di
 	pop si
@@ -132,9 +153,81 @@ repaint:
 	ret
 	
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; hero fire
+; hits invader
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-hero_fire:
+hits_inv:
+	push ax
+	push bx
+	push cx
+	push dx
+	push di
+	push si
+	lea bx, invaders
+	lea di, bullet_f
+	cmp byte ptr[di], 0
+	jne l1dash
+	jmp out_of_range
+l1dash:
+	xor cx, cx
+	mov cl, [bx]
+	mov ax, 15				; hieght of each invader is 15 , 230w 200h
+	mul cl
+	mov di, ax				; di = 15 * cl
+	mov ax, 320
+	lea si, top
+	xor dx, dx
+	mov dl, byte ptr[si]
+	add di, dx
+	mul di	; ax = 320 * ([top] + 15 * vertical_offset)
+	lea si, left
+	add al, byte ptr[si]	; ax = 320 * ([top] + vertical_offset) + [left]
+	lea si, invaders
+	mov di, bx
+	sub di, si
+	mov si, ax	; si = 320 * ([top] + vertical_offset) + [left]
+	mov ax, 25
+	mul di
+	add ax, si	; ax = 320 * ([top] + vertical_offset) + [left] + 25 * horizontal_offset
+	; ax is pointing to the upper left of the invader
+	mov si, 320
+	div si
+	mov si, ax		; si = row of top left of invader
+	mov cx, dx		; cx = column of top left of invader
+	lea di, bullet_pos
+	mov ax, word ptr[di]
+	xor dx, dx		
+	mov di, 320
+	div di			;dx:ax/arg quotient (row) in ax remainder (column) in dx
+	; ax = row of bullet dx = column of bullet
+	cmp dx, cx
+	jl	out_of_range	; less than invader column so get out
+	add cx, 20
+	cmp dx, cx
+	ja	continue		; see next invader
+	add si, 6			; bottom of invader
+	cmp ax, si
+	ja	out_of_range	; still below
+	dec byte ptr[bx]	; hits me
+	lea di, bullet_f
+	mov byte ptr[di], 0	; destroy bullet
+	call repaint
+	jmp out_of_range
+continue:	
+	lea di, invaders
+	add di, 10	; last index of invaders
+	inc bx
+	cmp bx, di
+	jl  l1dash
+out_of_range:
+	pop si
+	pop di
+	pop dx
+	pop cx
+	pop bx
+	pop ax
+	ret
+
+	
 	
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -232,6 +325,7 @@ lp3:
 	loop lp3
 	pop cx
 	ret  
+
 draw_bullet:
     lea si, bullet_f
     mov al, [si]
@@ -240,10 +334,18 @@ draw_bullet:
 	mov ax, 0a000h
 	mov es, ax
 	lea bx, bullet_pos
+	mov si, word ptr [bx]
+	mov byte ptr es:[si], 0
+	mov byte ptr es:[si+320], 0 	 ; remove the bullet
 	sub word ptr [bx],6*320          ; decrement the bullet pos
-	mov si,word ptr [bx]             
+	mov si,word ptr [bx]
 	mov byte ptr es:[si], 1
-	mov byte ptr es:[si-320], 1 
+	mov byte ptr es:[si+320], 1
+	call hits_inv
+	cmp si, 3200						 ; reached top of the screen; invalidate it
+	ja	ret_draw_bullet
+	lea si, bullet_f
+	mov byte ptr[si], 0
 ret_draw_bullet:
     ret	
 
@@ -280,7 +382,6 @@ MyInt9 proc far
 	xor cx, cx
 	mov ax, @data
 	mov ds, ax	 ; restore ds
-	sti
 Wait4Data:
 	in al, 64h ;Read kbd status port.
 	test al, 10b ;Data in buffer?
@@ -302,58 +403,46 @@ Wait4Data:
 handle_left:
 	lea di, hero_pos
 	sub word ptr[di], 20
-;	mov si, word ptr[di]
-;	mov ax, 0a000h
-;	mov es, ax
-;	call repaint
+	call repaint
 	jmp go_out
 handle_right:
 	lea di, hero_pos
 	add byte ptr[di], 20
-;	mov si, word ptr[di]
-;	mov ax, 0a000h
-;	mov es, ax
-;	call repaint
+	call repaint
 	jmp go_out
 handle_up:
 	lea di, hero_pos
 	sub word ptr[di], 4*320
-;	mov si, word ptr[di]
-;	mov ax, 0a000h
-;	mov es, ax
-;	call repaint
+	call repaint
 	jmp go_out
 handle_down:
 	lea di, hero_pos
 	add word ptr[di], 4*320
-;	mov si, word ptr[di]
-;	mov ax, 0a000h
-;	mov es, ax
-;	call repaint
+	call repaint
 	jmp go_out
 handle_space:
-    lea bx, bullet_f
-    cmp byte ptr [bx],01h
-    je  go_out
-    mov byte ptr [bx],01h
-	lea si, hero_pos      
-	lea bx, bullet_pos
-	mov ax, word ptr[si]                 
-	mov word ptr[bx], ax
-;	mov si, word ptr[di]
-;	mov ax, 0a000h
-;	mov es, ax
-;	call repaint
+    lea di, bullet_f
+    mov byte ptr[di],1h
+	lea di, hero_pos      
+	lea si, bullet_pos
+	mov ax, word ptr[di]                 
+	mov word ptr[si], ax
+	add word ptr[si], 10
 	jmp go_out
 handle_esc:
-    lea di, exit_f
-    mov [di],1
-    jmp go_out
+	lea  dx,exit_msg
+    call disp_msg
+	mov ah,00			;again subfunc 0
+	mov al,03			;text mode 3
+	int 10h			;call int
+	mov ax,4c00h
+	int 21h
 go_out:
 	mov al, 0AEh ;Reenable the keyboard
 	call SetCmd
 	mov al, 20h ;Send EOI (end of interrupt)
 	out 20h, al ; to the 8259A PIC.
+	sti
 	pop cx
 	pop ax
 	pop ds
@@ -375,20 +464,13 @@ disp_msg:         ; dx holds the string's address
     pop  dx
     mov  ah,9
     int  21h 
-    push cx
-    mov  cx,10
-d_msg:
     call delay
-    loop d_msg  
-    pop  cx
+	mov ax, 13h
+	int 10h	;cls
     pop  bx
     pop  ax
     ret
-    
-exit:
-    lea  dx,exit_msg
-    call disp_msg
-	mov  ax,0x4c00h			;end program normally
-	int  21h
+	
+
 
 end start
